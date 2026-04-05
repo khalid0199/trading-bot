@@ -1,0 +1,76 @@
+import os
+import pandas as pd
+from pybit.unified_trading import HTTP
+from ta.trend import EMAIndicator
+from ta.momentum import RSIIndicator
+import time
+import requests
+
+API_KEY = os.getenv("API_KEY")
+API_SECRET = os.getenv("API_SECRET")
+TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
+CHAT_ID = os.getenv("CHAT_ID")
+
+SYMBOL = "BTCUSDT"
+
+session = HTTP(api_key=API_KEY, api_secret=API_SECRET)
+
+def send_message(text):
+    url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
+    requests.post(url, data={"chat_id": CHAT_ID, "text": text})
+
+def get_data():
+    kline = session.get_kline(category="linear", symbol=SYMBOL, interval="5", limit=100)
+    df = pd.DataFrame(kline['result']['list']).astype(float)[::-1]
+    return df
+
+def add_indicators(df):
+    df['ema50'] = EMAIndicator(df[4], window=50).ema_indicator()
+    df['ema200'] = EMAIndicator(df[4], window=200).ema_indicator()
+    df['rsi'] = RSIIndicator(df[4], window=14).rsi()
+    return df
+
+def check_signal(df):
+    last = df.iloc[-1]
+    if last['ema50'] > last['ema200'] and last['rsi'] < 30:
+        return "BUY"
+    elif last['ema50'] < last['ema200'] and last['rsi'] > 70:
+        return "SELL"
+    return None
+
+def get_position():
+    pos = session.get_positions(category="linear", symbol=SYMBOL)
+    for p in pos['result']['list']:
+        if float(p['size']) > 0:
+            return p
+    return None
+
+def open_position(side):
+    session.place_order(
+        category="linear",
+        symbol=SYMBOL,
+        side="Buy" if side == "BUY" else "Sell",
+        orderType="Market",
+        qty=0.01
+    )
+    send_message(f"Сделка: {side}")
+
+def run_bot():
+    send_message("Бот запущен")
+
+    while True:
+        try:
+            df = add_indicators(get_data())
+            signal = check_signal(df)
+            position = get_position()
+
+            if position is None and signal:
+                open_position(signal)
+
+            time.sleep(60)
+
+        except Exception as e:
+            send_message(f"Ошибка: {e}")
+            time.sleep(60)
+
+run_bot()
